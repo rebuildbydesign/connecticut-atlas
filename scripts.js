@@ -1,15 +1,17 @@
 mapboxgl.accessToken = 'pk.eyJ1IjoiajAwYnkiLCJhIjoiY2x1bHUzbXZnMGhuczJxcG83YXY4czJ3ayJ9.S5PZpU9VDwLMjoX_0x5FDQ';
 
-// HOLDS THE CURRENTLY OPEN POPUP
+// -------------------- GLOBALS --------------------
 var currentPopup = null;
-
+let CT_CONGRESS_GEOJSON = null;
+let CT_HOUSE_GEOJSON = null;
+let CT_SENATE_GEOJSON = null;
 
 // INITIALIZE MAP
 var map = new mapboxgl.Map({
     container: 'map',
     style: 'mapbox://styles/mapbox/light-v11',
-    center: [-72.7554, 41.6032], // CENTERED ON CONNECTICUT
-    zoom: 7.4,
+    center: [-72.7554, 41.58], // CENTERED ON CONNECTICUT
+    zoom: 8.3,
     minZoom: 6.4
 });
 
@@ -32,41 +34,51 @@ var geocoder = new MapboxGeocoder({
 });
 document.getElementById('geocoder').appendChild(geocoder.onAdd(map));
 
+
+
 // HANDLE GEOCODER SEARCH RESULTS (POPUP LOGIC)
 geocoder.on('result', function (e) {
-    var lngLat = e.result.center;
-    var point = map.project(lngLat);
+  const lngLat = e.result.center;
+  const pointPx = map.project(lngLat);
 
-    var features = map.queryRenderedFeatures(point, {
-        layers: ['femaDisasters', 'congressionalDistricts', 'houseDistricts', 'senateDistricts']
-    });
+  const countyFeatures = map.queryRenderedFeatures(pointPx, { layers: ['femaDisasters'] });
 
-    if (features.length > 0) {
-        var featureData = consolidateFeatureData(features);
-        var popupContent = createPopupContent(featureData);
+  const renderedDistricts = map.queryRenderedFeatures(pointPx, {
+    layers: ['congressionalDistricts', 'houseDistricts', 'senateDistricts']
+  });
 
-        var femaFeature = features.find(f => f.layer && f.layer.id === 'femaDisasters');
-        if (femaFeature && typeof turf !== 'undefined') {
-            // USE CENTROID FOR FEMA DISASTER FEATURE
-            var geojsonFeature = {
-                "type": "Feature",
-                "geometry": femaFeature.geometry,
-                "properties": femaFeature.properties
-            };
-            var centroid = turf.centroid(geojsonFeature).geometry.coordinates;
-            showPopup({ lng: centroid[0], lat: centroid[1] }, popupContent);
-        } else {
-            showPopup(lngLat, popupContent);
-        }
+  const districtsFromMemory = getDistrictFeaturesFromMemory(lngLat);
+
+  const allFeatures = countyFeatures.concat(renderedDistricts, districtsFromMemory);
+
+  if (allFeatures.length > 0) {
+    const featureData = consolidateFeatureData(allFeatures);
+    const popupContent = createPopupContent(featureData);
+
+    const femaFeature = countyFeatures.find(f => f.layer && f.layer.id === 'femaDisasters');
+    if (femaFeature && typeof turf !== 'undefined') {
+      const centroid = turf.centroid({
+        type: 'Feature',
+        geometry: femaFeature.geometry,
+        properties: femaFeature.properties
+      }).geometry.coordinates;
+      showPopup({ lng: centroid[0], lat: centroid[1] }, popupContent);
     } else {
-        showPopup(lngLat, "<div style='color:#222'>No county or district data at this location.</div>");
+      showPopup(lngLat, popupContent);
     }
+  } else {
+    showPopup(lngLat, "<div style='color:#222'>No county or district data at this location.</div>");
+  }
 });
+
+
 
 // LOAD MAP AND LAYERS, SETUP TOOLTIP INTERACTION
 map.on('load', function () {
     addLayers();
     handleMapClick();
+        setupLayerToggles();
+
 
     // TOOLTIP FOR HOVERING OVER COUNTY
     map.on('mousemove', (e) => {
@@ -131,85 +143,198 @@ function addLayers() {
 
 // ADD CONGRESSIONAL DISTRICT POLYGONS
 function addCongressionalLayers() {
-    map.addSource('CTCongress', {
-        type: 'geojson',
-        data: 'data/CT_Congress.geojson'
-    });
+  fetch('data/CT_Congress.geojson')
+    .then(r => r.json())
+    .then(data => {
+      MA_CONGRESS_GEOJSON = data;
+      map.addSource('ctCongress', { type: 'geojson', data });
 
-    map.addLayer({
-        'id': 'congressionalDistricts',
-        'type': 'fill',
-        'source': 'CTCongress',
-        'paint': {
-            'fill-color': 'transparent'
+      map.addLayer({
+        id: 'congressionalDistricts',
+        type: 'fill',
+        source: 'ctCongress',
+        layout: { visibility: 'none' },
+        paint: { 'fill-color': 'transparent', 'fill-opacity': 1 }
+      });
+
+      map.addLayer({
+        id: 'congressionalDistrictsOutline',
+        type: 'line',
+        source: 'ctCongress',
+        layout: { visibility: 'none' },
+        paint: { 'line-color': '#000', 'line-width': 1.5 }
+      });
+
+      map.addLayer({
+        id: 'congressionalLabels',
+        type: 'symbol',
+        source: 'ctCongress',
+        layout: {
+          'visibility': 'none',
+          'text-field': ['get', 'OFFICE_ID'],
+          'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+          'text-size': 20
+        },
+        paint: {
+          'text-color': '#000',
+          'text-halo-color': '#ffffff',
+          'text-halo-width': 1.5
         }
+      });
     });
 }
+
+
+
 
 // ADD STATE HOUSE DISTRICT POLYGONS
 function addHouseLayers() {
-    map.addSource('CTHouse', {
-        type: 'geojson',
-        data: 'data/CT_House.geojson'
-    });
+  fetch('data/CT_House.geojson')
+    .then(r => r.json())
+    .then(data => {
+      MA_HOUSE_GEOJSON = data;
+      map.addSource('ctHouse', { type: 'geojson', data });
 
-    map.addLayer({
-        'id': 'houseDistricts',
-        'type': 'fill',
-        'source': 'CTHouse',
-        'paint': {
-            'fill-color': 'transparent'
+      map.addLayer({
+        id: 'houseDistricts',
+        type: 'fill',
+        source: 'ctHouse',
+        layout: { visibility: 'visible' },
+        paint: { 'fill-color': 'transparent', 'fill-opacity': 1 }
+      });
+
+      map.addLayer({
+        id: 'houseDistrictsOutline',
+        type: 'line',
+        source: 'ctHouse',
+        layout: { visibility: 'visible' },
+        paint: { 'line-color': '#000', 'line-width': 1.5 }
+      });
+
+      map.addLayer({
+        id: 'houseLabels',
+        type: 'symbol',
+        source: 'ctHouse',
+        layout: {
+          'visibility': 'visible',
+          'text-field': ['get', 'DistrictN'],
+          'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+          'text-size': 12
+        },
+        paint: {
+          'text-color': '#000',
+          'text-halo-color': '#ffffff',
+          'text-halo-width': 1.5
         }
+      });
     });
 }
+
 
 // ADD STATE SENATE DISTRICT POLYGONS
 function addSenateLayers() {
-    map.addSource('CTSenate', {
-        type: 'geojson',
-        data: 'data/CT_Senate.geojson'
-    });
+  fetch('data/CT_Senate.geojson')
+    .then(r => r.json())
+    .then(data => {
+      MA_SENATE_GEOJSON = data;
+      map.addSource('ctSenate', { type: 'geojson', data });
 
-    map.addLayer({
-        'id': 'senateDistricts',
-        'type': 'fill',
-        'source': 'CTSenate',
-        'paint': {
-            'fill-color': 'transparent'
+      map.addLayer({
+        id: 'senateDistricts',
+        type: 'fill',
+        source: 'ctSenate',
+        layout: { visibility: 'none' },
+        paint: { 'fill-color': 'transparent', 'fill-opacity': 1 }
+      });
+
+      map.addLayer({
+        id: 'senateDistrictsOutline',
+        type: 'line',
+        source: 'ctSenate',
+        layout: { visibility: 'none' },
+        paint: { 'line-color': '#000', 'line-width': 1.5 }
+      });
+
+      map.addLayer({
+        id: 'senateLabels',
+        type: 'symbol',
+        source: 'ctSenate',
+        layout: {
+          'visibility': 'none',
+          'text-field': ['get', 'District num'],
+          'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+          'text-size': 12
+        },
+        paint: {
+          'text-color': '#000',
+          'text-halo-color': '#ffffff',
+          'text-halo-width': 1.5
         }
+      });
     });
 }
+
 
 // HANDLE MAP CLICK POPUP (COUNTY + DISTRICT DETAILS)
 function handleMapClick() {
-    map.on('click', function (e) {
-        var features = map.queryRenderedFeatures(e.point, {
-            layers: ['femaDisasters', 'congressionalDistricts', 'houseDistricts', 'senateDistricts']
-        });
+  map.on('click', function (e) {
+    const lngLat = [e.lngLat.lng, e.lngLat.lat];
 
-        if (features.length > 0) {
-            var featureData = consolidateFeatureData(features);
-            var popupContent = createPopupContent(featureData);
-
-            var femaFeature = features.find(f => f.layer && f.layer.id === 'femaDisasters');
-            var isMobile = window.innerWidth <= 700;
-
-            if (femaFeature && typeof turf !== 'undefined' && !isMobile) {
-                // DESKTOP: SHOW POPUP AT COUNTY CENTROID
-                var geojsonFeature = {
-                    "type": "Feature",
-                    "geometry": femaFeature.geometry,
-                    "properties": femaFeature.properties
-                };
-                var centroid = turf.centroid(geojsonFeature).geometry.coordinates;
-                showPopup({ lng: centroid[0], lat: centroid[1] }, popupContent);
-            } else {
-                // MOBILE: SHOW POPUP AT CLICK LOCATION
-                showPopup(e.lngLat, popupContent);
-            }
-        }
+    const countyFeatures = map.queryRenderedFeatures(e.point, { layers: ['femaDisasters'] });
+    const renderedDistricts = map.queryRenderedFeatures(e.point, {
+      layers: ['congressionalDistricts', 'houseDistricts', 'senateDistricts']
     });
+
+    const districtsFromMemory = getDistrictFeaturesFromMemory(lngLat);
+    const allFeatures = countyFeatures.concat(renderedDistricts, districtsFromMemory);
+
+    if (allFeatures.length > 0) {
+      const featureData = consolidateFeatureData(allFeatures);
+      const popupContent = createPopupContent(featureData);
+
+      const femaFeature = countyFeatures.find(f => f.layer && f.layer.id === 'femaDisasters');
+      const isMobile = window.innerWidth <= 700;
+
+      if (femaFeature && typeof turf !== 'undefined' && !isMobile) {
+        const centroid = turf.centroid({
+          type: 'Feature',
+          geometry: femaFeature.geometry,
+          properties: femaFeature.properties
+        }).geometry.coordinates;
+        showPopup({ lng: centroid[0], lat: centroid[1] }, popupContent);
+      } else {
+        showPopup(e.lngLat, popupContent);
+      }
+    }
+  });
 }
+
+
+
+// -------------------- TOGGLES --------------------
+function setupLayerToggles() {
+  document.getElementById('toggle-congress').addEventListener('change', e => {
+    const v = e.target.checked ? 'visible' : 'none';
+    map.setLayoutProperty('congressionalDistricts', 'visibility', v);
+    map.setLayoutProperty('congressionalDistrictsOutline', 'visibility', v);
+    map.setLayoutProperty('congressionalLabels', 'visibility', v);
+  });
+
+  document.getElementById('toggle-house').addEventListener('change', e => {
+    const v = e.target.checked ? 'visible' : 'none';
+    map.setLayoutProperty('houseDistricts', 'visibility', v);
+    map.setLayoutProperty('houseDistrictsOutline', 'visibility', v);
+    map.setLayoutProperty('houseLabels', 'visibility', v);
+  });
+
+  document.getElementById('toggle-senate').addEventListener('change', e => {
+    const v = e.target.checked ? 'visible' : 'none';
+    map.setLayoutProperty('senateDistricts', 'visibility', v);
+    map.setLayoutProperty('senateDistrictsOutline', 'visibility', v);
+    map.setLayoutProperty('senateLabels', 'visibility', v);
+  });
+}
+
 
 // CONSOLIDATE ALL FEATURE DATA FROM CLICK OR SEARCH
 function consolidateFeatureData(features) {
@@ -288,7 +413,7 @@ function createPopupContent(featureData) {
           Elected Officials Covering This Location
         </div>
         <ul style="list-style:none; padding:0; margin:0 0 0.9em 0;">
-          <li style="margin-bottom: 3px;"><strong>U.S. Senate:</strong> Richard Blumenthal (D), Chris Murphy (D)</li>
+          <li style="margin-bottom: 3px;"><strong>U.S. Senate:</strong> Chris Murphy (D), Richard Blumenthal (D)</li>
           <li style="margin-bottom: 3px;"><strong>U.S. House:</strong> ${featureData.congressRepName || 'N/A'} (${featureData.congressionalDist || 'N/A'})</li>
           <li style="margin-bottom: 3px;"><strong>State Senate:</strong> ${featureData.senateRepName || 'N/A'} (${featureData.senateDist || 'N/A'})</li>
           <li style="margin-bottom: 3px;"><strong>State House:</strong> ${featureData.houseRepName || 'N/A'} (${featureData.houseDist || 'N/A'})</li>
@@ -313,3 +438,30 @@ function showPopup(lngLat, content) {
         .addTo(map);
 }
 
+
+// -------------------- POINT-IN-POLYGON FIX -------------------
+function getDistrictFeaturesFromMemory(lngLat) {
+  const pt = turf.point(lngLat);
+  const hits = [];
+
+  function addHits(geojson, layerId) {
+    if (!geojson || !geojson.features) return;
+    for (const f of geojson.features) {
+      if (turf.booleanPointInPolygon(pt, f)) {
+        hits.push({
+          type: 'Feature',
+          geometry: f.geometry,
+          properties: f.properties,
+          layer: { id: layerId }
+        });
+        break;
+      }
+    }
+  }
+
+  addHits(MA_CONGRESS_GEOJSON, 'congressionalDistricts');
+  addHits(MA_HOUSE_GEOJSON, 'houseDistricts');
+  addHits(MA_SENATE_GEOJSON, 'senateDistricts');
+
+  return hits;
+}
